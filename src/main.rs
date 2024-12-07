@@ -1,4 +1,6 @@
 use std::time::Duration;
+use std::collections::HashMap;
+
 use bevy::prelude::*;
 use bevy::render::camera::ScalingMode;
 use crate::thing::ThingPlugin;
@@ -23,7 +25,7 @@ fn main () {
         .add_plugins(ThingPlugin)
         .add_systems(Startup, setup)
         .add_systems(Update, (animate_sprite, execute_animations))
-        .add_systems(Update, (character_movement))
+        .add_systems(Update, character_movement)
         .run();
 }
 #[derive(Component)]
@@ -31,19 +33,12 @@ pub struct Player {
     pub speed: f32,
     pub state: PlayerState,
     pub last_direction: Option<Direction>,
-    pub idle_animations: DirectionalAnimations,
+    pub animations: HashMap<PlayerState, AnimationSheet>,
 }
-#[derive(PartialEq, Eq)]
-enum PlayerState {
+#[derive(PartialEq, Eq, Hash, Copy, Clone)]
+pub enum PlayerState {
     Idle,
     Moving,
-}
-#[derive(Clone)]
-pub struct DirectionalAnimations {
-    pub up: AnimationIndices,
-    pub down: AnimationIndices,
-    pub left: AnimationIndices,
-    pub right: AnimationIndices,
 }
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum Direction {
@@ -86,25 +81,28 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut texture_atl
     };
     commands.spawn(camera);
 
-    /*let texture = asset_server.load("Characters/Base/Unarmed_Idle_full.png");
-    commands.spawn((
-        SpriteBundle {
-            texture,
-            transform: Transform::IDENTITY.with_scale(Vec3::splat(2.)),
-            ..default()
-        },
-        Player { speed: 240.0, state: PlayerState::Idle },
-    ));*/
     let idle_texture_atlas = asset_server.load("Characters/Base/Unarmed_Idle_full.png");
     let layout = TextureAtlasLayout::from_grid(UVec2::splat(64), 12, 4, None, None);
     let texture_atlas_layout = texture_atlas_layouts.add(layout);
     let animation_indices = AnimationIndices { first: 0, last: 4 };
-    let idle_animations = DirectionalAnimations {
-        up: AnimationIndices { first: 36, last: 36 },
-        down: AnimationIndices { first: 0, last: 4 },
-        left: AnimationIndices { first: 12, last: 15 },
-        right: AnimationIndices { first: 6, last: 10},
-    };
+    let character_animations = HashMap::from([
+        (PlayerState::Idle, AnimationSheet {
+            sprite_sheet: idle_texture_atlas.clone(),
+            atlas_layout: texture_atlas_layout.clone(),
+            ru: AnimationIndices { first: 36, last: 36 },
+            lu: AnimationIndices { first: 0, last: 4 },
+            rd: AnimationIndices { first: 6, last: 10 },
+            ld: AnimationIndices { first: 12, last: 15},
+        }),
+        (PlayerState::Moving, AnimationSheet {
+            sprite_sheet: asset_server.load("Characters/Base/Unarmed_Walk_full.png"),
+            atlas_layout: texture_atlas_layouts.add(TextureAtlasLayout::from_grid(UVec2::splat(64), 6, 4, None, None)),
+            ru: AnimationIndices { first: 0, last: 5 },
+            lu: AnimationIndices { first: 6, last: 11 },
+            rd: AnimationIndices { first: 12, last: 17 },
+            ld: AnimationIndices { first: 18, last: 23 },
+        }),
+    ]);
     commands.spawn((
         SpriteBundle {
             transform: Transform::from_scale(Vec3::splat(3.0)),
@@ -115,7 +113,12 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut texture_atl
             layout: texture_atlas_layout.clone(),
             index: animation_indices.first,
         },
-        Player {speed: 240.0, last_direction: None, state: PlayerState::Idle, idle_animations,},
+        Player {
+            speed: 240.0,
+            last_direction: None,
+            state: PlayerState::Idle,
+            animations: character_animations.clone(),
+        },
         AnimationTimer(Timer::from_seconds(0.1, TimerMode::Repeating))
     ));
 }
@@ -152,10 +155,19 @@ impl AnimationConfig {
         Timer::new(Duration::from_secs_f32(1.0 / (fps as f32)), TimerMode::Once)
     }
 }
+#[derive(Clone)]
+pub struct AnimationSheet {
+    pub sprite_sheet: Handle<Image>,
+    pub atlas_layout: Handle<TextureAtlasLayout>,
+    pub ru: AnimationIndices,
+    pub lu: AnimationIndices,
+    pub rd: AnimationIndices,
+    pub ld: AnimationIndices,
+}
 #[derive(Component, Clone)]
-struct AnimationIndices {
-    first: usize,
-    last: usize,
+pub struct AnimationIndices {
+    pub first: usize,
+    pub last: usize,
 }
 
 #[derive(Component, Deref, DerefMut)]
@@ -185,35 +197,47 @@ fn execute_animations(
         }
     }
 }
+
+// ANIMATING SPRITES
+// Animating Indices directions macro
 fn animate_sprite(
     time: Res<Time>,
-    mut query: Query<(&Player, &mut AnimationTimer, &mut TextureAtlas)>,
+    mut query: Query<(&Player, &mut AnimationTimer, &mut Handle<Image>, &mut TextureAtlas)>,
 ) {
-    for (player, mut timer, mut sprite) in &mut query {
+    for (player, mut timer, mut sprite_bundle, mut sprite) in &mut query {
         timer.tick(time.delta());
 
-        // Use the player's last direction to select idle animations
-        if player.state == PlayerState::Idle {
-            let indices = match player.last_direction {
-                Some(Direction::RU) => player.idle_animations.up.clone(),
-                Some(Direction::LU) => player.idle_animations.down.clone(),
-                Some(Direction::LD) => player.idle_animations.left.clone(),
-                Some(Direction::RD) => player.idle_animations.right.clone(),
-                None => player.idle_animations.down.clone(), // Default idle direction
+        let animation_indices;
+        if player.state == PlayerState::Idle && player.animations.contains_key(&PlayerState::Idle) {
+            *sprite_bundle = player.animations[&PlayerState::Idle].sprite_sheet.clone();
+            sprite.layout = player.animations[&PlayerState::Idle].atlas_layout.clone();
+            animation_indices = player.animations[&PlayerState::Idle].clone();
+        } else if player.state == PlayerState::Moving && player.animations.contains_key(&PlayerState::Moving) {
+            *sprite_bundle = player.animations[&PlayerState::Moving].sprite_sheet.clone();
+            sprite.layout = player.animations[&PlayerState::Moving].atlas_layout.clone();
+            animation_indices = player.animations[&PlayerState::Moving].clone();
+        } else { // Set it to the idle animation otherwise
+            *sprite_bundle = player.animations[&PlayerState::Idle].sprite_sheet.clone();
+            sprite.layout = player.animations[&PlayerState::Idle].atlas_layout.clone();
+            animation_indices = player.animations[&PlayerState::Idle].clone();
+        }
+
+        let indices = match player.last_direction {
+            Some(Direction::RU) => animation_indices.ru,
+            Some(Direction::LU) => animation_indices.lu,
+            Some(Direction::LD) => animation_indices.ld,
+            Some(Direction::RD) => animation_indices.rd,
+            None => animation_indices.rd,
+        };
+        if sprite.index < indices.first || sprite.index > indices.last {
+            sprite.index = indices.first;
+        }
+        if timer.just_finished() {
+            sprite.index = if sprite.index == indices.last {
+                indices.first
+            } else {
+                sprite.index + 1
             };
-
-            if sprite.index < indices.first || sprite.index > indices.last {
-                sprite.index = indices.first;
-            }
-
-            // Update sprite index for idle animation
-            if timer.just_finished() {
-                sprite.index = if sprite.index == indices.last {
-                    indices.first
-                } else {
-                    sprite.index + 1
-                };
-            }
         }
     }
 }
